@@ -1,7 +1,7 @@
 # Builds the XRD reference library from the Crystallography Open Database.
 # Runs on every push to main that changes build.py or this file, or from the Actions tab ("Run workflow").
-# Downloads the COD CIFs in 80 slices in parallel, keeps inorganic entries with COD numbers below 9000000,
-# computes each powder pattern and publishes xrd_library_cod.npz on the release "xrd-library".
+# Lists the COD CIF tree, splits it into up to 240 slices of similar size, builds the slices in parallel (inorganic
+# entries with COD numbers below 9000000) and publishes xrd_library_cod.npz on the release "xrd-library".
 name: Build COD XRD library
 
 on:
@@ -14,43 +14,60 @@ permissions:
   contents: write
 
 jobs:
-  shard:
+  plan:
     runs-on: ubuntu-latest
-    timeout-minutes: 350
+    outputs:
+      slices: ${{ steps.plan.outputs.slices }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: List COD and split it into slices
+        id: plan
+        run: |
+          for i in 1 2 3 4; do
+            rsync --list-only -r --timeout=600 rsync://www.crystallography.net/cif/ > listing.txt && break
+            sleep $((i * 30))
+          done
+          echo "slices=$(python build.py plan listing.txt)" >> "$GITHUB_OUTPUT"
+
+  shard:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
     strategy:
       fail-fast: false
-      max-parallel: 8  # be gentle with the COD server
+      max-parallel: 12  # be gentle with the COD server
       matrix:
-        first: ["1", "2", "3", "4", "5", "6", "7", "8"]
-        second: ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]
+        slice: ${{ fromJSON(needs.plan.outputs.slices) }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
       - name: Install
+        run: pip install numpy pymatgen
+      - name: Download this slice of COD
         run: |
-          pip install numpy pymatgen
-      - name: Download COD CIFs ${{ matrix.first }}/${{ matrix.second }}*
-        run: |
-          mkdir -p cod
+          echo "${{ matrix.slice }}" | tr ',' '\n' | awk -F/ '{print "+ " $1 "/"; print "+ " $1 "/" $2 "/"; print "+ " $0 "/***"}' | sort -u > filter.txt
+          echo "- *" >> filter.txt
           for i in 1 2 3 4; do
-            rsync -a --timeout=600 --include='${{ matrix.first }}/' --include='${{ matrix.first }}/${{ matrix.second }}*/***' \
-              --exclude='*' rsync://www.crystallography.net/cif/ cod/ && break
+            rsync -a --timeout=600 --filter="merge filter.txt" rsync://www.crystallography.net/cif/ cod/ && break
             sleep $((i * 30))
           done
           echo "$(find cod -name '*.cif' | wc -l) CIFs"
+      - name: Name the shard
+        id: name
+        run: echo "id=$(echo '${{ matrix.slice }}' | cut -d, -f1 | tr '/' '_')" >> "$GITHUB_OUTPUT"
       - name: Compute patterns
-        run: python build.py shard cod shard_${{ matrix.first }}_${{ matrix.second }}.npz --workers 4
+        run: python build.py shard cod shard_${{ steps.name.outputs.id }}.npz --workers 4
       - uses: actions/upload-artifact@v4
         with:
-          name: shard_${{ matrix.first }}_${{ matrix.second }}
+          name: shard_${{ steps.name.outputs.id }}
           path: shard_*.npz
           retention-days: 3
 
   merge:
     needs: shard
-    if: always()
+    if: always() && needs.shard.result != 'skipped'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -64,7 +81,9 @@ jobs:
           merge-multiple: true
           path: shards
       - name: Merge
-        run: python build.py merge xrd_library_cod.npz shards/*.npz
+        run: |
+          ls shards | wc -l
+          python build.py merge xrd_library_cod.npz shards/*.npz
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}

@@ -2,6 +2,10 @@
 
     python build.py shard  cod  shard_1_0.npz  --workers 4
     python build.py merge  xrd_library_cod.npz  shard_*.npz
+    python build.py plan   listing.txt  > slices.json
+
+plan: reads `rsync --list-only -r` output of the COD cif tree and splits it into slices of similar size, each a
+comma-separated list of folders such as 1/50/12 (100 COD numbers each), for the workflow's job matrix.
 
 shard: computes the powder pattern (Cu Kα1, 5–140° 2θ, stored as d-spacings) of every inorganic CIF under the folder.
 Left out:
@@ -11,7 +15,7 @@ Left out:
 merge: joins shards, keeping one entry per COD number.
 
 COD data are open and free to use (https://www.crystallography.net/cod/); each phase keeps its COD number.
-Output: one .npz with flat arrays d, I, hkl (lines x 4, int8), hkl_len, offsets (per phase), elmask (2 x uint64 per
+Output: one .npz with flat arrays d, I, hkl (lines x 4, int16), hkl_len, offsets (per phase), elmask (2 x uint64 per
 phase, bit = index in SYMBOLS) and meta (one JSON object per phase, newline-separated, starting with "id").
 """
 from __future__ import annotations
@@ -86,7 +90,7 @@ def save(refs: list[dict], path) -> None:
         em.append(m)
     np.savez_compressed(path, meta=np.frombuffer(b"\n".join(meta), np.uint8), offsets=np.asarray(offsets, np.int64),
                         d=np.asarray(d, np.float32), I=np.asarray(I, np.float32),
-                        hkl=np.asarray(hkl, np.int8).reshape(-1, 4), hkl_len=np.asarray(hl, np.int8),
+                        hkl=np.asarray(hkl, np.int16).reshape(-1, 4), hkl_len=np.asarray(hl, np.int8),
                         elmask=np.asarray(em, np.uint64).reshape(-1, 2))
 
 
@@ -200,6 +204,32 @@ def merge(out: str, shards: list[str]):
     print(f"{len(refs)} phases, {sum(len(r['d']) for r in refs)} lines written to {out}")
 
 
+def plan(listing: str, max_slices: int = 240, min_per: int = 2500):
+    counts = {}
+    for line in open(listing, errors="replace"):
+        path = line.rsplit(None, 1)[-1] if line.strip() else ""
+        m = re.fullmatch(r"(\d)/(\d\d)/(\d\d)/(\d+)\.cif", path)
+        if m and int(m.group(4)) < AMCSD_FROM:
+            unit = "/".join(m.groups()[:3])
+            counts[unit] = counts.get(unit, 0) + 1
+    total = sum(counts.values())
+    if not total:
+        raise SystemExit("no COD CIF paths found in the listing")
+    per = max(min_per, -(-total // max_slices))
+    slices, cur, n = [], [], 0
+    for unit in sorted(counts):
+        cur.append(unit)
+        n += counts[unit]
+        if n >= per:
+            slices.append(",".join(cur))
+            cur, n = [], 0
+    if cur:
+        slices.append(",".join(cur))
+    print(json.dumps(slices))
+    import sys
+    print(f"{total} CIFs below {AMCSD_FROM} in {len(counts)} folders -> {len(slices)} slices of about {per}", file=sys.stderr)
+
+
 def main():
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -207,12 +237,16 @@ def main():
     a.add_argument("cif_dir")
     a.add_argument("out")
     a.add_argument("--workers", type=int, default=4)
+    pl = sub.add_parser("plan")
+    pl.add_argument("listing")
     m = sub.add_parser("merge")
     m.add_argument("out")
     m.add_argument("shards", nargs="+")
     args = ap.parse_args()
     if args.cmd == "shard":
         shard(args.cif_dir, args.out, args.workers)
+    elif args.cmd == "plan":
+        plan(args.listing)
     else:
         merge(args.out, args.shards)
 
