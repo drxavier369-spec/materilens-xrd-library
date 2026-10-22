@@ -20,6 +20,10 @@ jobs:
       slices: ${{ steps.plan.outputs.slices }}
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install numpy
       - name: List COD and split it into slices
         id: plan
         run: |
@@ -27,7 +31,8 @@ jobs:
             rsync --list-only -r --timeout=600 rsync://www.crystallography.net/cif/ > listing.txt && break
             sleep $((i * 30))
           done
-          echo "slices=$(python build.py plan listing.txt)" >> "$GITHUB_OUTPUT"
+          python build.py plan listing.txt > slices.json
+          echo "slices=$(cat slices.json)" >> "$GITHUB_OUTPUT"
 
   shard:
     needs: plan
