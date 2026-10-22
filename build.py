@@ -139,6 +139,36 @@ def wanted(path: Path) -> tuple[bool, str, str]:
     return True, name, formula
 
 
+# Common polymorphs whose CIFs often carry no mineral name: (reduced formula, space group) -> name
+MINERALS = {
+    ("TiO2", "I4_1/amd"): "Anatase", ("TiO2", "P4_2/mnm"): "Rutile", ("TiO2", "Pbca"): "Brookite",
+    ("SiO2", "P3_221"): "Quartz", ("SiO2", "P3_121"): "Quartz", ("SiO2", "P6_222"): "Quartz (high)",
+    ("SiO2", "P6_422"): "Quartz (high)", ("SiO2", "P4_12_12"): "Cristobalite", ("SiO2", "P4_32_12"): "Cristobalite",
+    ("SiO2", "C2/c"): "Coesite", ("CaCO3", "R-3c"): "Calcite", ("CaCO3", "Pnma"): "Aragonite",
+    ("CaCO3", "Pmcn"): "Aragonite", ("Al2O3", "R-3c"): "Corundum", ("Fe2O3", "R-3c"): "Hematite",
+    ("Fe3O4", "Fd-3m"): "Magnetite", ("ZnO", "P6_3mc"): "Zincite", ("MgO", "Fm-3m"): "Periclase",
+    ("NaCl", "Fm-3m"): "Halite", ("KCl", "Fm-3m"): "Sylvite", ("CaF2", "Fm-3m"): "Fluorite",
+    ("ZrO2", "P2_1/c"): "Baddeleyite", ("CeO2", "Fm-3m"): "Cerianite", ("SnO2", "P4_2/mnm"): "Cassiterite",
+    ("FeS2", "Pa-3"): "Pyrite", ("ZnS", "F-43m"): "Sphalerite", ("ZnS", "P6_3mc"): "Wurtzite",
+    ("C", "Fd-3m"): "Diamond", ("C", "P6_3/mmc"): "Graphite", ("CaSO4", "Cmcm"): "Anhydrite",
+    ("BaSO4", "Pnma"): "Baryte", ("MgAl2O4", "Fd-3m"): "Spinel", ("Cu2O", "Pn-3m"): "Cuprite",
+    ("CuO", "C2/c"): "Tenorite", ("NiO", "Fm-3m"): "Bunsenite", ("MnO2", "P4_2/mnm"): "Pyrolusite",
+    ("Ca(OH)2", "P-3m1"): "Portlandite", ("Mg(OH)2", "P-3m1"): "Brucite", ("CaO", "Fm-3m"): "Lime",
+}
+
+
+def display_name(raw: str, formula: str, spacegroup: str) -> str:
+    """Mineral or common name with the formula, or the formula alone when the CIF only repeats it."""
+    raw = " ".join(raw.replace("?", " ").split()).strip(" ,;")
+    compact = lambda t: re.sub(r"[\s()]", "", t).lower()
+    if not raw or len(raw) > 60 or compact(raw) == compact(formula):
+        raw = MINERALS.get((formula, spacegroup), "")
+    if not raw:
+        return formula
+    raw = raw[0].upper() + raw[1:]
+    return f"{raw} ({formula})" if compact(raw) != compact(formula) else formula
+
+
 def _alarm(*_):
     raise TimeoutError
 
@@ -163,8 +193,7 @@ def one(path: str):
                                              licence="COD (open data, free for any use)")
         finally:
             signal.alarm(0)
-        if name and len(name) < 80:
-            r["name"] = f"{name} ({r['formula']})" if name.lower() != r["formula"].lower() else r["formula"]
+        r["name"] = display_name(name, r["formula"], r["spacegroup"])
         r["url"] = f"https://www.crystallography.net/cod/{p.stem}.html"
         keep_lines = [i for i, v in enumerate(r["I"]) if v >= MIN_I]
         for k in ("d", "I", "hkl"):
