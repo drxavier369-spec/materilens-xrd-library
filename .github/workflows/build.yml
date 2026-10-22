@@ -1,0 +1,74 @@
+# Builds the XRD reference library from the Crystallography Open Database.
+# Runs on every push to main that changes build.py or this file, or from the Actions tab ("Run workflow").
+# Downloads the COD CIFs in 80 slices in parallel, keeps inorganic entries with COD numbers below 9000000,
+# computes each powder pattern and publishes xrd_library_cod.npz on the release "xrd-library".
+name: Build COD XRD library
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [build.py, .github/workflows/build.yml]
+
+permissions:
+  contents: write
+
+jobs:
+  shard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 8  # be gentle with the COD server
+      matrix:
+        first: ["1", "2", "3", "4", "5", "6", "7", "8"]
+        second: ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install
+        run: |
+          pip install numpy pymatgen
+      - name: Download COD CIFs ${{ matrix.first }}/${{ matrix.second }}*
+        run: |
+          mkdir -p cod
+          for i in 1 2 3 4; do
+            rsync -a --timeout=600 --include='${{ matrix.first }}/' --include='${{ matrix.first }}/${{ matrix.second }}*/***' \
+              --exclude='*' rsync://www.crystallography.net/cif/ cod/ && break
+            sleep $((i * 30))
+          done
+          echo "$(find cod -name '*.cif' | wc -l) CIFs"
+      - name: Compute patterns
+        run: python build.py shard cod shard_${{ matrix.first }}_${{ matrix.second }}.npz --workers 4
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shard_${{ matrix.first }}_${{ matrix.second }}
+          path: shard_*.npz
+          retention-days: 3
+
+  merge:
+    needs: shard
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install numpy
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: shard_*
+          merge-multiple: true
+          path: shards
+      - name: Merge
+        run: python build.py merge xrd_library_cod.npz shards/*.npz
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view xrd-library >/dev/null 2>&1 || gh release create xrd-library --title "XRD reference library (COD)" \
+            --notes "Powder patterns computed from the Crystallography Open Database (COD numbers below 9000000, inorganic entries). Built by the Build COD XRD library workflow."
+          gh release upload xrd-library xrd_library_cod.npz --clobber
