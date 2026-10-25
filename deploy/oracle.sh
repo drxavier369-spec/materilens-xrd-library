@@ -26,5 +26,7 @@ while true; do
 done
 export GH_TOKEN
 clear
+# saved to a file first: piped into bash, the script's own ssh/oci calls could swallow the rest of it from stdin
 curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github.raw" \
-  "$API/contents/deploy/oracle/cloudshell.sh?ref=prototype" | bash
+  "$API/contents/deploy/oracle/cloudshell.sh?ref=prototype" -o ~/materilens-setup.sh
+bash ~/materilens-setup.sh
